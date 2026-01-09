@@ -26,6 +26,9 @@ def load_and_validate_stats(uploaded_file):
     df = df[df['StartPrice'] > 0]
     df['Distance'] = df['Distance'].astype(float)
     
+    # Feature Engineering: Day of Week
+    df['DayOfWeek'] = df['StartTime'].dt.day_name()
+    
     return df
 
 def load_and_validate_impulse(uploaded_file):
@@ -44,4 +47,8 @@ def load_and_validate_impulse(uploaded_file):
     df = df[df['BasePrice'] > 0]
     df['Reversal%'] = df['Reversal%'].astype(float)
     
+    # Feature Engineering: Day of Week
+    df['DayOfWeek'] = df['Time'].dt.day_name()
+    
     return df
+

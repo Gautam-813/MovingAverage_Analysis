@@ -17,10 +17,6 @@ uploaded_stats = st.sidebar.file_uploader("Upload Crossover_Stats.csv", type=['c
 uploaded_impulse = st.sidebar.file_uploader("Upload Impulse_Reversal.csv", type=['csv'])
 
 st.sidebar.divider()
-st.sidebar.header("⚙️ Analysis Settings")
-min_impulse = st.sidebar.slider("Minimum Impulse Filter (Points)", min_value=0.0, max_value=200.0, value=5.0, step=1.0)
-
-st.sidebar.divider()
 st.sidebar.header("🔍 Analysis Selection")
 analysis_type = st.sidebar.selectbox(
     "What market question do you want answered?",
@@ -45,20 +41,36 @@ else:
         from plots.trend_plots import plot_distance_distribution, plot_duration_vs_distance
         from plots.pullback_plots import plot_reversal_distribution, plot_impulse_vs_pullback
 
-        if "1." in analysis_type:
+        days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+        # Selection Logic
+        if analysis_type.startswith("1."):
             if not uploaded_stats:
                 st.warning("⚠️ Please upload `Crossover_Stats.csv` in the sidebar to run Trend Intelligence.")
             else:
                 st.subheader("🔵 Crossover Trend Intelligence")
                 df_raw = load_and_validate_stats(uploaded_stats)
-                results, df = run_trend_analysis(df_raw)
+                
+                # --- Contextual Filters ---
+                with st.expander("🛠️ Chart Controls & Time Filtering", expanded=True):
+                    c1, c2 = st.columns([2, 1])
+                    selected_days = c1.multiselect("Filter by Day of Week", options=days_order, default=days_order)
+                    min_dist = c2.number_input("Min Distance Filter", value=0.0, step=10.0)
+                
+                # Apply Filters
+                df_filtered = df_raw[
+                    (df_raw['DayOfWeek'].isin(selected_days)) & 
+                    (df_raw['Distance'] >= min_dist)
+                ].copy()
+                
+                results, df = run_trend_analysis(df_filtered)
                 
                 # --- Metrics ---
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Avg Distance", f"{results['global_stats']['Mean']:.2f}")
                 col2.metric("Median Distance", f"{results['global_stats']['Median']:.2f}")
                 col3.metric("Avg Duration (Min)", f"{results['avg_duration']:.1f}")
-                col4.metric("Bullish/Bearish Ratio", f"{len(df[df['Direction']=='BULLISH'])/len(df[df['Direction']=='BEARISH']):.2f}")
+                col4.metric("Bullish/Bearish Ratio", f"{len(df[df['Direction']=='BULLISH'])/max(1, len(df[df['Direction']=='BEARISH'])):.2f}")
                 
                 # --- Plotly Charts ---
                 st.plotly_chart(plot_distance_distribution(df))
@@ -67,16 +79,26 @@ else:
                 with st.expander("View Raw Intelligence Table"):
                     st.dataframe(df)
 
-        elif "2." in analysis_type:
+        elif analysis_type.startswith("2."):
             if not uploaded_impulse:
                 st.warning("⚠️ Please upload `Impulse_Reversal.csv` in the sidebar to run Behavioral Analysis.")
             else:
                 st.subheader("🔴 Impulse & Reversal Behavior")
                 df_raw = load_and_validate_impulse(uploaded_impulse)
                 
-                # Apply Impulse Filter
-                df_filtered = df_raw[df_raw['Impulse'] >= min_impulse].copy()
-                st.info(f"Filtering: Keeping {len(df_filtered)} of {len(df_raw)} logs with Impulse >= {min_impulse}")
+                # --- Contextual Filters ---
+                with st.expander("🛠️ Chart Controls & Time Filtering", expanded=True):
+                    c1, c2 = st.columns([2, 1])
+                    selected_days = c1.multiselect("Filter by Day of Week", options=days_order, default=days_order)
+                    min_impulse_local = c2.slider("Min Impulse Filter", 0.0, 200.0, 5.0, 1.0)
+                
+                # Apply Filters
+                df_filtered = df_raw[
+                    (df_raw['DayOfWeek'].isin(selected_days)) & 
+                    (df_raw['Impulse'] >= min_impulse_local)
+                ].copy()
+                
+                st.info(f"Filtering: Keeping {len(df_filtered)} of {len(df_raw)} logs")
                 
                 results, df = run_impulse_analysis(df_filtered)
                 
@@ -96,20 +118,31 @@ else:
                 st.info(f"💡 **Actionable Logic:** 90% of healthy trends retrace less than **{results['pullback_quantiles'][0.9]:.2f}%**. Exits before this are statistically premature.")
 
 
-        elif "3." in analysis_type:
+        elif analysis_type.startswith("3."):
             if not uploaded_stats or not uploaded_impulse:
                 st.warning("⚠️ Fusion Analysis requires BOTH CSV files to be uploaded.")
             else:
                 st.subheader("🟣 Combined Market Structure (Fusion)")
-                stats_df = load_and_validate_stats(uploaded_stats)
+                stats_raw = load_and_validate_stats(uploaded_stats)
                 impulse_raw = load_and_validate_impulse(uploaded_impulse)
                 
-                # Apply Impulse Filter
-                impulse_df = impulse_raw[impulse_raw['Impulse'] >= min_impulse].copy()
+                # --- Contextual Filters ---
+                with st.expander("🛠️ Chart Controls & Time Filtering", expanded=True):
+                    c1, c2 = st.columns([2, 1])
+                    selected_days = c1.multiselect("Filter by Day of Week", options=days_order, default=days_order)
+                    min_impulse_fusion = c2.slider("Min Impulse Filter (for Behavior)", 0.0, 200.0, 5.0, 1.0)
+                
+                # Apply Filters
+                stats_df = stats_raw[stats_raw['DayOfWeek'].isin(selected_days)].copy()
+                impulse_df = impulse_raw[
+                    (impulse_raw['DayOfWeek'].isin(selected_days)) & 
+                    (impulse_raw['Impulse'] >= min_impulse_fusion)
+                ].copy()
                 
                 results, fused_df = run_fusion_analysis(stats_df, impulse_df)
                 
                 st.metric("90% Survival Threshold", f"{results['pullback_90th_percentile']:.2f}%")
+
                 
                 st.markdown(f"""
                 ### 🛡️ Recommended Management Zones
