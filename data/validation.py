@@ -17,6 +17,8 @@ def load_and_validate_stats(uploaded_file):
     # DateTime conversion
     df['StartTime'] = pd.to_datetime(df['StartTime'])
     df['EndTime'] = pd.to_datetime(df['EndTime'])
+    df['ScanStart'] = pd.to_datetime(df['ScanStart'])
+    df['ScanEnd'] = pd.to_datetime(df['ScanEnd'])
     
     # Direction validation
     df['Direction'] = df['Direction'].str.upper()
@@ -38,6 +40,8 @@ def load_and_validate_impulse(uploaded_file):
     
     # DateTime conversion
     df['Time'] = pd.to_datetime(df['Time'])
+    df['ScanStart'] = pd.to_datetime(df['ScanStart'])
+    df['ScanEnd'] = pd.to_datetime(df['ScanEnd'])
     
     # Direction validation
     df['Direction'] = df['Direction'].str.upper()

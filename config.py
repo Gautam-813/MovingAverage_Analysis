@@ -12,12 +12,14 @@ CSV_IMPULSE = "Impulse_Reversal.csv"
 # --- Column Definitions ---
 COLS_STATS = [
     "StartTime", "EndTime", "Direction", "StartPrice", 
-    "EndPrice", "MaxMinPrice", "Distance", "MAValue"
+    "EndPrice", "MaxMinPrice", "Distance", "MAValue", 
+    "Symbol", "TF", "MAPeriod", "MAType", "ScanStart", "ScanEnd"
 ]
 
 COLS_IMPULSE = [
     "Time", "Direction", "BasePrice", "Peak", 
-    "TriggerPrice", "Impulse", "Pullback", "Reversal%"
+    "TriggerPrice", "Impulse", "Pullback", "Reversal%",
+    "Symbol", "TF", "MAPeriod", "MAType", "ScanStart", "ScanEnd"
 ]
 
 # --- Validation Settings ---
