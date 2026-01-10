@@ -13,12 +13,20 @@ CSV_IMPULSE = "Impulse_Reversal.csv"
 COLS_STATS = [
     "StartTime", "EndTime", "Direction", "StartPrice", 
     "EndPrice", "MaxMinPrice", "Distance", "MAValue", 
+    "StartATR_Closed", "StartATR_Live", 
+    "PeakATR_Closed", "PeakATR_Live",
+    "EndATR_Closed", "EndATR_Live",
+    "Session_Start", "Session_Peak", "Session_End",
     "Symbol", "TF", "MAPeriod", "MAType", "ScanStart", "ScanEnd"
 ]
 
 COLS_IMPULSE = [
     "Time", "Direction", "BasePrice", "Peak", 
     "TriggerPrice", "Impulse", "Pullback", "Reversal%",
+    "BaseATR_Closed", "BaseATR_Live",
+    "PeakATR_Closed", "PeakATR_Live",
+    "RevATR_Closed", "RevATR_Live",
+    "Session_Base", "Session_Peak", "Session_Trigger",
     "Symbol", "TF", "MAPeriod", "MAType", "ScanStart", "ScanEnd"
 ]
 

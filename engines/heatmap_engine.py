@@ -25,6 +25,7 @@ def calculate_heatmap_matrix(df, ranges):
     
     matrix_counts = []
     matrix_pcts = []
+    matrix_atrs = []
     y_labels = []
 
     for start, end in ranges:
@@ -42,6 +43,7 @@ def calculate_heatmap_matrix(df, ranges):
             # Empty row of zeros
             matrix_counts.append([0] * len(x_labels))
             matrix_pcts.append([0] * len(x_labels))
+            matrix_atrs.append([0] * len(x_labels))
         else:
             # Bin the Reversal %
             # cut returns a Series of Intervals
@@ -63,4 +65,19 @@ def calculate_heatmap_matrix(df, ranges):
                 
             matrix_pcts.append(row_pcts)
 
-    return matrix_pcts, matrix_counts, y_labels, x_labels
+            # --- ATR Calculation Logic ---
+            # We need to bin the 'subset' again to get the ATRs for each specific bin
+            # pd.cut returns the bin label. We group by that.
+            subset['Bin'] = pd.cut(subset['Reversal%'], bins=bins, include_lowest=True, right=False)
+            
+            # Group by Bin and calculate Mean BaseATR (Volatility when move started)
+            # You can change 'BaseATR_Live' to 'PeakATR_Live' if preferred. Base is usually cleaner.
+            atr_series = subset.groupby('Bin')['BaseATR_Live'].mean()
+            
+            # Reindex to match the bins structure
+            # Categories must match EXACTLY what pd.cut produced above
+            atr_series = atr_series.reindex(counts_series.index).fillna(0)
+            
+            matrix_atrs.append(atr_series.tolist())
+
+    return matrix_pcts, matrix_counts, matrix_atrs, y_labels, x_labels

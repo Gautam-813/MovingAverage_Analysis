@@ -143,7 +143,15 @@ else:
                 
                 # --- Plotly Charts ---
                 st.plotly_chart(plot_distance_distribution(df))
-                st.plotly_chart(plot_duration_vs_distance(df))
+                
+                # Session Box Plot (New)
+                if 'Session_Start' in df.columns:
+                     from plots.trend_plots import plot_distance_by_session
+                     st.plotly_chart(plot_distance_by_session(df))
+                
+                # Scatter Plot with Options
+                scatter_color = st.selectbox("Scatter Plot Color", ["Direction", "Session_Start", "DayOfWeek"], key="scatter_col")
+                st.plotly_chart(plot_duration_vs_distance(df, color_by=scatter_color))
                 
                 with st.expander("View Raw Intelligence Table"):
                     st.dataframe(df)
@@ -204,13 +212,37 @@ else:
                 st.success(f"📊 **Context:** {meta['Symbol']} | {meta['TF']} | {meta['MAType']} Period: {meta['MAPeriod']}")
                 st.caption(f"📅 **Session Span:** {pd.to_datetime(meta['ScanStart']).strftime('%Y.%m.%d %H:%M')} — {pd.to_datetime(scan_end).strftime('%Y.%m.%d %H:%M')}")
                 
+                # --- Advanced Filters ---
+                st.markdown("### 🎯 Session Coherence")
+                show_samesess = st.checkbox("Show Only Same-Session Events (Base = Peak = Trigger)", value=False)
+                
+                # Calculate Same-Session Metric before filtering
+                if 'Session_Base' in df_filtered.columns and 'Session_Trigger' in df_filtered.columns:
+                    # Strict Definition: Base, Peak, and Trigger must match
+                    # Or at least Start (Base) and End (Trigger) match?
+                    # User said: "crossover impulse and reversal was there in the same session"
+                    # Let's enforce Base == Peak == Trigger for "Perfect" coherence
+                    same_sess_mask = (df_filtered['Session_Base'] == df_filtered['Session_Peak']) & (df_filtered['Session_Peak'] == df_filtered['Session_Trigger'])
+                    same_sess_count = same_sess_mask.sum()
+                    same_sess_ratio = (same_sess_count / len(df_filtered) * 100) if len(df_filtered) > 0 else 0
+                else:
+                    same_sess_ratio = 0
+                    same_sess_mask = pd.Series([True]*len(df_filtered), index=df_filtered.index)
+
+                if show_samesess:
+                    df_filtered = df_filtered[same_sess_mask].copy()
+                    if df_filtered.empty:
+                        st.warning("No events found where Base, Peak, and Trigger occurred in the same session.")
+                        st.stop()
+
                 results, df = run_impulse_analysis(df_filtered)
                 
                 # --- Metrics ---
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Median Reversal %", f"{results['pullback_stats']['Median']:.2f}%")
                 col2.metric("90th Percentile Pullback", f"{results['pullback_quantiles'][0.9]:.2f}%")
                 col3.metric("Impulse/Pullback Corr", f"{results['impulse_pullback_corr']:.2f}")
+                col4.metric("Same-Session Coherence", f"{same_sess_ratio:.1f}%", help="% of events starting and ending in the same session")
                 
                 # --- Plotly Charts ---
                 st.plotly_chart(plot_reversal_distribution(df))
@@ -233,16 +265,51 @@ else:
                     df_hm = df_hm[df_hm['Direction'] == hm_dir]
 
                 # Heatmap Logic
+                # Heatmap Logic
+                st.divider()
+                st.markdown("### 🌡️ Volatility & Reversal Heatmap")
+                
+                # Session Filter for Heatmap
+                c1, c2 = st.columns(2)
+                heatmap_sess = c1.radio("Filter Session", ["ALL", "SYDNEY", "TOKYO", "LONDON", "NEW YORK"], horizontal=True, key="hm_sess")
+                view_mode    = c2.radio("Chart Type", ["2D Grid", "3D Topography"], horizontal=True, key="hm_view")
+
                 heatmap_input = st.text_input("Define Impulse Ranges for Heatmap (e.g. 10-20, 21-30...)", value="10-20, 21-30, 31-40, 41-50, 51-60, 61-70, 71-80, 81-90, 91-100, 100-150, 151-200")
                 heatmap_ranges = parse_multi_range(heatmap_input)
                 
                 if heatmap_ranges:
-                   # Calculate Matrix
-                   matrix_pcts, matrix_counts, y_labels, x_labels = calculate_heatmap_matrix(df_hm, heatmap_ranges)
+                   # Determine which sessions to plot
+                   if heatmap_sess == "ALL":
+                       sessions_to_plot = ["SYDNEY", "TOKYO", "LONDON", "NEW YORK"]
+                   else:
+                       sessions_to_plot = [heatmap_sess]
                    
-                   # Plot (Normalized)
-                   fig_hm = plot_heatmap_matrix(matrix_pcts, matrix_counts, x_labels, y_labels)
-                   st.plotly_chart(fig_hm, use_container_width=True)
+                   for sess in sessions_to_plot:
+                       # Filter by Session
+                       if 'Session_Peak' in df_hm.columns:
+                           df_sess = df_hm[df_hm['Session_Peak'] == sess]
+                       else:
+                           df_sess = df_hm if sess == "ALL" else pd.DataFrame()
+                       
+                       if df_sess.empty:
+                           if heatmap_sess != "ALL": st.warning(f"No data for session: {sess}")
+                           continue
+                       
+                       # Calculate Matrix
+                       matrix_pcts, matrix_counts, matrix_atrs, y_labels, x_labels = calculate_heatmap_matrix(df_sess, heatmap_ranges)
+                       
+                       title_suffix = f" — {sess} Session"
+                       
+                       if view_mode == "2D Grid":
+                           # Plot 2D
+                           fig_hm = plot_heatmap_matrix(matrix_pcts, matrix_counts, matrix_atrs, x_labels, y_labels, title_suffix=title_suffix)
+                           st.plotly_chart(fig_hm, use_container_width=True)
+                       else:
+                           # Plot 3D
+                           from plots.heatmap_plots import plot_heatmap_3d
+                           fig_3d = plot_heatmap_3d(matrix_pcts, x_labels, y_labels, title_suffix=title_suffix)
+                           st.plotly_chart(fig_3d, use_container_width=True)
+                       
                 else:
                    st.caption("Enter ranges above to generate the heatmap matrix.")
 
