@@ -270,10 +270,25 @@ else:
                 st.markdown("### 🌡️ Volatility & Reversal Heatmap")
                 
                 # Session Filter for Heatmap
-                c1, c2 = st.columns(2)
+                c1, c2, c3 = st.columns(3)
                 heatmap_sess = c1.radio("Filter Session", ["ALL", "SYDNEY", "TOKYO", "LONDON", "NEW YORK"], horizontal=True, key="hm_sess")
                 view_mode    = c2.radio("Chart Type", ["2D Grid", "3D Topography"], horizontal=True, key="hm_view")
+                show_master_sess = c3.checkbox("Show Master Session Comparison", value=True)
 
+                # --- MASTER SESSION COMPARISON (If Toggled) ---
+                if show_master_sess and 'Session_Peak' in df_hm.columns:
+                    from engines.heatmap_engine import calculate_session_comparison_matrix
+                    st.markdown("#### 🌍 Master Session Comparison")
+                    m_pcts, m_counts, m_atrs, m_y, m_x = calculate_session_comparison_matrix(df_hm)
+                    
+                    if view_mode == "2D Grid":
+                        st.plotly_chart(plot_heatmap_matrix(m_pcts, m_counts, m_atrs, m_x, m_y, title_suffix=" — Global Session Comparison"), use_container_width=True)
+                    else:
+                        from plots.heatmap_plots import plot_heatmap_3d
+                        st.plotly_chart(plot_heatmap_3d(m_pcts, m_x, m_y, title_suffix=" — Global Session Comparison"), use_container_width=True)
+                
+                # --- STANDARD IMPULSE-BASED HEATMAPS ---
+                st.markdown("#### ⚡ Impulse-Based Heatmaps")
                 heatmap_input = st.text_input("Define Impulse Ranges for Heatmap (e.g. 10-20, 21-30...)", value="10-20, 21-30, 31-40, 41-50, 51-60, 61-70, 71-80, 81-90, 91-100, 100-150, 151-200")
                 heatmap_ranges = parse_multi_range(heatmap_input)
                 

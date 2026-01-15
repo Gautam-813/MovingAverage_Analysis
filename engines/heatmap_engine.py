@@ -81,3 +81,49 @@ def calculate_heatmap_matrix(df, ranges):
             matrix_atrs.append(atr_series.tolist())
 
     return matrix_pcts, matrix_counts, matrix_atrs, y_labels, x_labels
+
+def calculate_session_comparison_matrix(df):
+    """
+    Calculates a frequency matrix comparing Reversal % distributions across Sessions.
+    """
+    if df.empty:
+        return [], [], [], [], []
+
+    sessions = ["SYDNEY", "TOKYO", "LONDON", "NEW YORK"]
+    bins = np.arange(0, 105, 5) 
+    x_labels = [f"{int(bins[i])}-{int(bins[i+1])}%" for i in range(len(bins)-1)]
+    
+    matrix_counts = []
+    matrix_pcts = []
+    matrix_atrs = []
+    y_labels = []
+
+    for sess in sessions:
+        mask = (df['Session_Peak'] == sess)
+        subset = df[mask]
+        
+        y_labels.append(f"{sess} (N={len(subset)})")
+        
+        if subset.empty:
+            matrix_counts.append([0] * len(x_labels))
+            matrix_pcts.append([0] * len(x_labels))
+            matrix_atrs.append([0] * len(x_labels))
+        else:
+            # Counts
+            counts_series = pd.cut(subset['Reversal%'], bins=bins, include_lowest=True, right=False).value_counts().sort_index()
+            counts_series = counts_series.reindex(pd.cut(pd.Series([0]), bins=bins, right=False).values.categories).fillna(0)
+            
+            row_counts = counts_series.tolist()
+            matrix_counts.append(row_counts)
+            
+            # Pcts
+            row_total = sum(row_counts)
+            matrix_pcts.append([(c / row_total) * 100.0 for c in row_counts])
+            
+            # ATRs
+            subset['Bin'] = pd.cut(subset['Reversal%'], bins=bins, include_lowest=True, right=False)
+            atr_series = subset.groupby('Bin', observed=False)['BaseATR_Live'].mean()
+            atr_series = atr_series.reindex(counts_series.index).fillna(0)
+            matrix_atrs.append(atr_series.tolist())
+
+    return matrix_pcts, matrix_counts, matrix_atrs, y_labels, x_labels
