@@ -16,6 +16,7 @@ COLS_STATS = [
     "StartATR_Closed", "StartATR_Live", 
     "PeakATR_Closed", "PeakATR_Live",
     "EndATR_Closed", "EndATR_Live",
+    "PriceMove%",
     "Session_Start", "Session_Peak", "Session_End",
     "Symbol", "TF", "MAPeriod", "MAType", "ScanStart", "ScanEnd"
 ]
@@ -26,6 +27,7 @@ COLS_IMPULSE = [
     "BaseATR_Closed", "BaseATR_Live",
     "PeakATR_Closed", "PeakATR_Live",
     "RevATR_Closed", "RevATR_Live",
+    "Impulse%", "Reversal%_Peak",
     "Session_Base", "Session_Peak", "Session_Trigger",
     "Symbol", "TF", "MAPeriod", "MAType", "ScanStart", "ScanEnd"
 ]

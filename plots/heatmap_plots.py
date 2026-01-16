@@ -1,25 +1,15 @@
 import plotly.graph_objects as go
 
 
-def plot_heatmap_matrix(matrix_pcts, matrix_counts, matrix_atrs, x_labels, y_labels, title_suffix=""):
+def plot_heatmap_matrix(matrix_pcts, matrix_counts, matrix_atrs, matrix_total_pcts, x_labels, y_labels, title_suffix=""):
     """
-    Plots a Heatmap Matrix using Subplots to allow distinct colors for each row.
-    
-    Args:
-        matrix_pcts: 2D list of probabilities (z-axis, color).
-        matrix_counts: 2D list of raw counts (for hover).
-        matrix_atrs: 2D list of Avg ATRs (for display).
-        x_labels: List of strings for X-axis (Reversal Bins).
-        y_labels: List of strings for Y-axis (Impulse Ranges).
-        title_suffix: Optional string to append to chart title (e.g. " - LONDON Session")
+    Plots a Heatmap Matrix with 3rd-line display and Grand Total in title.
     """
     if not matrix_pcts:
         return go.Figure()
 
-
-    # Prepare text matrix (Count + Probability + ATR) for display inside cells
+    grand_total_n = sum([sum(row) for row in matrix_counts])
     text_matrix = []
-    # Combine counts and atrs for customdata
     custom_data = [] 
     
     for i in range(len(matrix_counts)):
@@ -27,50 +17,47 @@ def plot_heatmap_matrix(matrix_pcts, matrix_counts, matrix_atrs, x_labels, y_lab
         row_custom = []
         for j in range(len(matrix_counts[i])):
             count = matrix_counts[i][j]
-            pct = matrix_pcts[i][j]
+            row_pct = matrix_pcts[i][j]
             atr = matrix_atrs[i][j]
+            total_pct = matrix_total_pcts[i][j]
             
-            # Pack custom data: [count, atr]
-            row_custom.append([count, atr])
+            row_custom.append([count, atr, total_pct])
             
             if count > 0:
-                # Format: "5<br>(12.5%)<br>ATR: 10"
-                row_text.append(f"<b>{count}</b><br>({pct:.1f}%)<br><span style='font-size:10px; color: grey'>ATR:{atr:.1f}</span>")
+                # 3-Line format: Count, Row %, ATR
+                row_text.append(f"<b>N: {count}</b><br>{row_pct:.1f}%<br>ATR: {atr:.1f}")
             else:
                 row_text.append("")
         text_matrix.append(row_text)
         custom_data.append(row_custom)
 
-    # Risk Matrix Style: Single Grid
-    # We use matrix_pcts for the Color (Heat)
     fig = go.Figure(data=go.Heatmap(
         z=matrix_pcts,
         x=x_labels,
         y=y_labels,
-        # Custom Colorscale: 0=White (Background), then Green->Yellow->Red
-        # We start green immediately after 0 to distinguish "No Data/Zero" from "Low Risk"
         colorscale=[
-            [0.0, 'white'],       # 0% = White
-            [0.01, '#90EE90'],    # >0% = Light Green
-            [0.5, 'yellow'],      # 50% = Yellow
-            [1.0, 'red']          # 100% = Red
+            [0.0, 'white'],       
+            [0.01, '#90EE90'],    
+            [0.5, 'yellow'],      
+            [1.0, 'red']          
         ],
         reversescale=False,
-        zmin=0, zmax=50,       # Cap at 50% for visibility
+        zmin=0, zmax=50,       
         text=text_matrix,
         texttemplate="%{text}",
+        textfont={"size": 11, "family": "Arial", "color": "black"}, 
         customdata=custom_data,
         hoverongaps=False,
-        hovertemplate='<b>%{y}</b><br>Reversal: %{x}<br>Probability: %{z:.1f}%<br>Count: %{customdata[0]}<br>Avg ATR: %{customdata[1]:.2f}<extra></extra>'
+        hovertemplate='<b>%{y}</b><br>Reversal: %{x}<br>Count: %{customdata[0]}<br>Row Prob: %{z:.1f}%<br>Avg ATR: %{customdata[1]:.2f}<extra></extra>'
     ))
 
     fig.update_layout(
-        title=f"Impulse vs. Reversal Matrix{title_suffix}",
+        title=f"Impulse vs. Reversal Matrix{title_suffix}<br><span style='font-size:12px'><b>Grand Total: N={grand_total_n}</b> | Legenda: N:Count | %:Row Probability | ATR:Volatility</span>",
         xaxis_title="Reversal % Zone",
         yaxis_title="Impulse Range",
         template="plotly_dark",
-        height=len(y_labels) * 50 + 200,
-        xaxis=dict(side="bottom") # Ensure labels are at bottom
+        height=len(y_labels) * 75 + 230, 
+        xaxis=dict(side="bottom") 
     )
 
     return fig

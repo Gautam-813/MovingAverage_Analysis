@@ -24,7 +24,8 @@ analysis_type = st.sidebar.selectbox(
         "Select an option...",
         "1. Crossover Trend Intelligence",
         "2. Impulse & Reversal Behavior",
-        "3. Combined Market Structure (Fusion)"
+        "3. Combined Market Structure (Fusion)",
+        "4. Price Movement Analysis (Volatility)"
     ]
 )
 
@@ -61,6 +62,18 @@ else:
                 st.sidebar.error(f"Invalid range format: {range_str}")
             return ranges
 
+        def generate_linear_ranges(start, step, count):
+            """Generates a comma-separated string of ranges: '0-10, 11-20, ...'"""
+            if count <= 0: return ""
+            ranges_list = []
+            curr = float(start)
+            for _ in range(int(count)):
+                nxt = curr + float(step)
+                # Format to avoid floating point mess (e.g. 0.30000000004)
+                ranges_list.append(f"{round(curr, 4)}-{round(nxt, 4)}")
+                curr = nxt
+            return ", ".join(ranges_list)
+
         def apply_multi_range_filter(df, column, ranges):
             """Filters dataframe where column value matches ANY of the provided ranges"""
             if not ranges:
@@ -81,6 +94,37 @@ else:
 
         days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
+        # 5. Universal Range Generator (SIDEBAR)
+        st.sidebar.divider()
+        st.sidebar.header("🛠️ Universal Range Setup")
+        range_op = st.sidebar.radio("Input Method", ["Manual", "Auto-Generate"], key="range_op")
+        
+        if range_op == "Auto-Generate":
+            c1, c2 = st.sidebar.columns(2)
+            # Context-sensitive defaults
+            is_pm = analysis_type.startswith("4")
+            g_start = c1.number_input("Start", value=0.0, format="%.3f" if is_pm else "%.2f", key="side_s")
+            g_step  = c2.number_input("Step", value=0.05 if is_pm else 10.0, format="%.3f" if is_pm else "%.2f", key="side_st")
+            g_count = st.sidebar.number_input("Count", value=10, step=1, key="side_c")
+            
+            if st.sidebar.button("Generate & Apply Ranges"):
+                gen_str = generate_linear_ranges(g_start, g_step, g_count)
+                if is_pm: st.session_state['pm_ranges_input'] = gen_str
+                else: st.session_state['sess_hm_input'] = gen_str # Sync points to main heatmap key
+        
+        else:
+            # Manual Mode: Provide text inputs in Sidebar
+            is_pm = analysis_type.startswith("4")
+            if is_pm:
+                st.sidebar.text_input("Impulse % Ranges", value="0-0.05, 0.05-0.1, 0.1-0.2, 0.2-0.5, 0.5-1.0", key="pm_ranges_input")
+            else:
+                st.sidebar.text_input("Impulse (Point) Ranges", value="10-20, 21-30, 31-40, 41-50, 51-60, 61-70, 71-80, 81-90, 91-100, 100-150, 151-200", key="sess_hm_input")
+            
+            # Additional Reversal Filtering (Optional)
+            st.sidebar.text_input("Reversal % Filtering Bands (Global)", value="0-100", key="global_rev_input")
+
+        # Selection Logic
+
         # Selection Logic
         if analysis_type.startswith("1."):
             if not uploaded_stats:
@@ -96,9 +140,8 @@ else:
                     date_range = c2.date_input("Select Analysis Period (Trend)", [])
                     min_dist = c3.number_input("Min Distance Filter", value=0.0, step=10.0)
                     
-                    c4, c5 = st.columns(2)
-                    imp_input = c4.text_input("⚡ Impulse/Distance Bands (e.g. 10-20, 50-100)", key="trend_imp")
-                    imp_ranges = parse_multi_range(imp_input)
+                    # Pull Impulse ranges from Sidebar
+                    imp_ranges = parse_multi_range(st.session_state.get('sess_hm_input', ""))
                     # Reversal bands not relevant for trend tab usually, but consistent UI is good. 
                     # Keeping it simple for trend: Impulse(Distance) bands only.
                 
@@ -170,12 +213,9 @@ else:
                     date_range = c2.date_input("Select Analysis Period (Impulse)", [], key="imp_date")
                     min_impulse_local = c3.slider("Min Impulse Slider", 0.0, 200.0, 5.0, 1.0)
                     
-                    c4, c5 = st.columns(2)
-                    imp_input = c4.text_input("⚡ Impulse Bands (e.g. 10-20, 50-100)", key="imp_imp")
-                    imp_ranges = parse_multi_range(imp_input)
-                    
-                    rev_input = c5.text_input("🔄 Reversal % Bands (e.g. 30-50, 80-100)", key="imp_rev")
-                    rev_ranges = parse_multi_range(rev_input)
+                    # Pull from Sidebar
+                    imp_ranges = parse_multi_range(st.session_state.get('sess_hm_input', ""))
+                    rev_ranges = parse_multi_range(st.session_state.get('global_rev_input', ""))
                 
                 # --- Filtering Logic ---
                 df_filtered = df_raw[df_raw['DayOfWeek'].isin(selected_days)].copy()
@@ -264,37 +304,34 @@ else:
                 if hm_dir != "ALL":
                     df_hm = df_hm[df_hm['Direction'] == hm_dir]
 
-                # Heatmap Logic
-                # Heatmap Logic
+                # --- SHARED CONTROLS ---
+                c1, c2 = st.columns(2)
+                heatmap_sess = c1.radio("Session", ["ALL", "SYDNEY", "TOKYO", "LONDON", "NEW YORK"], horizontal=True, key="heatmap_sess")
+                view_mode = c2.radio("Chart Style", ["2D Grid", "3D Topography"], horizontal=True, key="view_mode")
+
                 st.divider()
                 st.markdown("### 🌡️ Volatility & Reversal Heatmap")
                 
-                # Session Filter for Heatmap
-                c1, c2, c3 = st.columns(3)
-                heatmap_sess = c1.radio("Filter Session", ["ALL", "SYDNEY", "TOKYO", "LONDON", "NEW YORK"], horizontal=True, key="hm_sess")
-                view_mode    = c2.radio("Chart Type", ["2D Grid", "3D Topography"], horizontal=True, key="hm_view")
-                show_combined_hm = c3.checkbox("Show Combined (All-Sessions) Heatmap", value=True)
-
-                # --- GLOBAL COMBINED HEATMAP (If Toggled) ---
-                if show_combined_hm:
-                    st.markdown("#### 🌍 Global Combined Heatmap (All Sessions)")
-                    heatmap_input_global = st.text_input("Define Impulse Ranges for Global Heatmap", value="10-20, 21-30, 31-40, 41-50, 51-60, 61-70, 71-80, 81-90, 91-100, 100-150, 151-200", key="global_hm_input")
-                    global_ranges = parse_multi_range(heatmap_input_global)
+                # --- GLOBAL MASTER HEATMAP (Shown if ALL selected) ---
+                if heatmap_sess == "ALL":
+                    st.markdown("#### 🌍 Global Master Heatmap (All Sessions Combined)")
+                    # Use sess_hm_input from sidebar
+                    global_ranges = parse_multi_range(st.session_state.get('sess_hm_input', ""))
                     
                     if global_ranges:
-                        g_pcts, g_counts, g_atrs, g_y, g_x = calculate_heatmap_matrix(df_hm, global_ranges)
+                        g_pcts, g_counts, g_atrs, g_total_pcts, g_y, g_x = calculate_heatmap_matrix(df_hm, global_ranges)
                         
                         if view_mode == "2D Grid":
-                            st.plotly_chart(plot_heatmap_matrix(g_pcts, g_counts, g_atrs, g_x, g_y, title_suffix=" — Global Combined"), use_container_width=True)
+                            st.plotly_chart(plot_heatmap_matrix(g_pcts, g_counts, g_atrs, g_total_pcts, g_x, g_y, title_suffix=" — Global Master"), use_container_width=True)
                         else:
                             from plots.heatmap_plots import plot_heatmap_3d
-                            st.plotly_chart(plot_heatmap_3d(g_pcts, g_x, g_y, title_suffix=" — Global Combined"), use_container_width=True)
-                
-                # --- STANDARD SESSION-SPECIFIC HEATMAPS ---
-                st.markdown("#### ⚡ Session-Specific Heatmaps")
-                heatmap_input = st.text_input("Define Impulse Ranges for Session Heatmaps", value="10-20, 21-30, 31-40, 41-50, 51-60, 61-70, 71-80, 81-90, 91-100, 100-150, 151-200", key="sess_hm_input")
+                            st.plotly_chart(plot_heatmap_3d(g_pcts, g_x, g_y, title_suffix=" — Global Master"), use_container_width=True)
+                    st.divider()
 
-                heatmap_ranges = parse_multi_range(heatmap_input)
+                # --- SESSION-SPECIFIC HEATMAPS ---
+                st.markdown("#### ⚡ Session-Specific Comparative Analysis")
+                
+                heatmap_ranges = parse_multi_range(st.session_state.get('sess_hm_input', ""))
                 
                 if heatmap_ranges:
                    # Determine which sessions to plot
@@ -314,20 +351,17 @@ else:
                            if heatmap_sess != "ALL": st.warning(f"No data for session: {sess}")
                            continue
                        
-                       # Calculate Matrix
-                       matrix_pcts, matrix_counts, matrix_atrs, y_labels, x_labels = calculate_heatmap_matrix(df_sess, heatmap_ranges)
+                       # Calculate Matrix (using the MASTER df_hm for total density context? 
+                       # Or the session df? Let's use df_hm for the total context)
+                       m_pcts, m_counts, m_atrs, m_tpcts, y_labels, x_labels = calculate_heatmap_matrix(df_sess, heatmap_ranges)
                        
                        title_suffix = f" — {sess} Session"
                        
                        if view_mode == "2D Grid":
-                           # Plot 2D
-                           fig_hm = plot_heatmap_matrix(matrix_pcts, matrix_counts, matrix_atrs, x_labels, y_labels, title_suffix=title_suffix)
-                           st.plotly_chart(fig_hm, use_container_width=True)
+                           st.plotly_chart(plot_heatmap_matrix(m_pcts, m_counts, m_atrs, m_tpcts, x_labels, y_labels, title_suffix=title_suffix), use_container_width=True)
                        else:
-                           # Plot 3D
                            from plots.heatmap_plots import plot_heatmap_3d
-                           fig_3d = plot_heatmap_3d(matrix_pcts, x_labels, y_labels, title_suffix=title_suffix)
-                           st.plotly_chart(fig_3d, use_container_width=True)
+                           st.plotly_chart(plot_heatmap_3d(m_pcts, x_labels, y_labels, title_suffix=title_suffix), use_container_width=True)
                        
                 else:
                    st.caption("Enter ranges above to generate the heatmap matrix.")
@@ -348,12 +382,9 @@ else:
                     date_range = c2.date_input("Select Analysis Period (Fusion)", [], key="fusion_date")
                     min_impulse_fusion = c3.slider("Min Impulse Slider", 0.0, 200.0, 5.0, 1.0)
                     
-                    c4, c5 = st.columns(2)
-                    imp_input = c4.text_input("⚡ Impulse Bands (e.g. 10-20, 50-100)", key="fusion_imp")
-                    imp_ranges = parse_multi_range(imp_input)
-                    
-                    rev_input = c5.text_input("🔄 Reversal % Bands (e.g. 30-50, 80-100)", key="fusion_rev")
-                    rev_ranges = parse_multi_range(rev_input)
+                    # Pull from Sidebar
+                    imp_ranges = parse_multi_range(st.session_state.get('sess_hm_input', ""))
+                    rev_ranges = parse_multi_range(st.session_state.get('global_rev_input', ""))
                 
                 # --- Filtering Logic for both Dataframes ---
                 # 1. Stats DF
@@ -400,6 +431,90 @@ else:
                 - **Yellow Zone (10% - {results['pullback_90th_percentile']:.2f}%)**: Market breathing. Prepare to trail.
                 - **Red Zone (>{results['pullback_90th_percentile']:.2f}%)**: Statistical failure. High risk of full reversal.
                 """)
+
+        elif analysis_type.startswith("4."):
+            if not uploaded_impulse:
+                st.warning("⚠️ Please upload `Impulse_Reversal.csv` to run Price Movement Analysis.")
+            else:
+                st.subheader("📈 Price Movement Analysis (Volatility)")
+                df_raw = load_and_validate_impulse(uploaded_impulse)
+                
+                # Check for new columns
+                if 'Impulse%' not in df_raw.columns:
+                    st.error("Missing `%` columns. Please regenerate data with the latest EA.")
+                else:
+                    # --- Filtering & Logic ---
+                    # (Re-use Option 2 filtering logic or simplify)
+                    with st.expander("🛠️ Filters", expanded=True):
+                         c1, c2 = st.columns(2)
+                         selected_days = c1.multiselect("Days", options=days_order, default=days_order, key="pm_days")
+                         min_imp = c2.slider("Min Impulse (%)", 0.0, 5.0, 0.0, 0.01)
+                    
+                    df_pm = df_raw[df_raw['DayOfWeek'].isin(selected_days)].copy()
+                    df_pm = df_pm[df_pm['Impulse%'] >= min_imp]
+
+                    # Metrics
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Avg Impulse %", f"{df_pm['Impulse%'].mean():.3f}%")
+                    c2.metric("Max Impulse %", f"{df_pm['Impulse%'].max():.3f}%")
+                    c3.metric("Total Waves", len(df_pm))
+                    same_sess_mask = (df_pm['Session_Base'] == df_pm['Session_Peak']) & (df_pm['Session_Peak'] == df_pm['Session_Trigger'])
+                    c4.metric("Coherence", f"{(same_sess_mask.sum()/max(1,len(df_pm))*100):.1f}%")
+
+                    st.divider()
+                    # Range Setup for Option 4
+                    st.markdown("### 🌡️ Price % Heatmap")
+                    
+                    pm_ranges = parse_multi_range(st.session_state.get('pm_ranges_input', ""))
+
+                    if pm_ranges:
+                        # Shared controls
+                        c1, c2 = st.columns(2)
+                        pm_sess = c1.radio("Session", ["ALL", "SYDNEY", "TOKYO", "LONDON", "NEW YORK"], horizontal=True, key="pm_sess")
+                        view_type = c2.radio("Analysis Mode", ["Aggregate (Master)", "Time-Based (Month/Quarter)"], horizontal=True, key="pm_view_type")
+
+                        # --- MODE A: AGGREGATE (Standard) ---
+                        if view_type == "Aggregate (Master)":
+                            # Chart Style Selector (Shared for all aggregate charts)
+                            pm_view = st.radio("Chart Style", ["2D Grid", "3D Topography"], horizontal=True, key="pm_view_agg")
+                            
+                            # 1. Global Master (If ALL)
+                            if pm_sess == "ALL":
+                                st.markdown("#### 🌍 Global Master % Heatmap")
+                                g_p, g_c, g_a, g_tp, y_l, x_l = calculate_heatmap_matrix(df_pm, pm_ranges, y_col='Impulse%')
+                                if pm_view == "2D Grid":
+                                    st.plotly_chart(plot_heatmap_matrix(g_p, g_c, g_a, g_tp, x_l, y_l, title_suffix=" — Global Master"), use_container_width=True)
+                                else:
+                                    from plots.heatmap_plots import plot_heatmap_3d
+                                    st.plotly_chart(plot_heatmap_3d(g_p, x_l, y_l, title_suffix=" — Global Master"), use_container_width=True)
+                                st.divider()
+
+                            # 2. Session Specific
+                            if pm_sess == "ALL": sessions = ["SYDNEY", "TOKYO", "LONDON", "NEW YORK"]
+                            else: sessions = [pm_sess]
+
+                            for s in sessions:
+                                sub = df_pm[df_pm['Session_Peak'] == s]
+                                if sub.empty: continue
+                                
+                                m_p, m_c, m_a, m_tp, y_l, x_l = calculate_heatmap_matrix(sub, pm_ranges, y_col='Impulse%')
+                                st.markdown(f"#### {s} Session")
+                                if pm_view == "2D Grid":
+                                    st.plotly_chart(plot_heatmap_matrix(m_p, m_c, m_a, m_tp, x_l, y_l, title_suffix=f" — {s}"), use_container_width=True)
+                                else:
+                                    from plots.heatmap_plots import plot_heatmap_3d
+                                    st.plotly_chart(plot_heatmap_3d(m_p, x_l, y_l, title_suffix=f" — {s}"), use_container_width=True)
+                        
+                        # --- MODE B: TIME-BASED ---
+                        else:
+                            # Apply Session Filter if not ALL
+                            df_time = df_pm.copy()
+                            if pm_sess != "ALL":
+                                df_time = df_time[df_time['Session_Peak'] == pm_sess]
+                                st.markdown(f"**Filtering by Session:** {pm_sess}")
+                            
+                            from engines.temporal_analysis import render_temporal_analysis_ui
+                            render_temporal_analysis_ui(df_time, pm_ranges)
 
     except Exception as e:
         st.error(f"❌ Analysis Error: {str(e)}")

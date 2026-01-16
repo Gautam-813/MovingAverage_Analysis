@@ -1,129 +1,127 @@
 import pandas as pd
 import numpy as np
 
-def calculate_heatmap_matrix(df, ranges):
+def calculate_heatmap_matrix(df, ranges, y_col='Impulse'):
     """
-    Calculates a frequency matrix for Reversal % across specified Impulse ranges.
+    Calculates a frequency matrix for Reversal % across specified ranges of a Y column.
     
     Args:
-        df: DataFrame containing 'Impulse' and 'Reversal%' columns.
-        ranges: List of tuples [(start, end), (start, end)] representing Impulse ranges.
+        df: DataFrame containing the data.
+        ranges: List of tuples [(start, end), ...] representing ranges for the Y column.
+        y_col: The column to use for the Y-axis (e.g. 'Impulse' or 'Impulse%').
         
     Returns:
-        matrix_pcts: 2D list of probabilities (0-100%).
-        matrix_counts: 2D list of raw counts.
-        y_labels: List of string labels for the ranges.
-        x_labels: List of string labels for the reversal bins.
+        matrix_pcts, matrix_counts, matrix_atrs, y_labels, x_labels
     """
     if df.empty or not ranges:
-        return [], [], [], []
+        return [], [], [], [], []
 
-    # 1. Define Reversal Bins (0-100% in 5% steps)
-    # We go slightly above 100 to catch anything over 100
-    bins = np.arange(0, 105, 5) 
-    x_labels = [f"{int(bins[i])}-{int(bins[i+1])}%" for i in range(len(bins)-1)]
+    # 1. Define Reversal Bins (0-100% in 5% steps + Overflow)
+    bins = list(range(0, 105, 5)) + [9999]  # Catch all up to 10000%
+    x_labels = [f"{bins[i]}-{bins[i+1]}%" if bins[i+1] <= 100 else ">100%" for i in range(len(bins)-1)]
     
     matrix_counts = []
     matrix_pcts = []
     matrix_atrs = []
+    matrix_total_pcts = []
     y_labels = []
 
+    total_n = len(df)
+
     for start, end in ranges:
-        # Filter Data for this Range
-        # Inclusive of start, exclusive of end (standard pythonic) or inclusive both?
-        # Let's do inclusive-inclusive for user intuition
-        mask = (df['Impulse'] >= start) & (df['Impulse'] <= end)
-        subset = df[mask]
+        # Filter Data for this Range in the specified Y column
+        mask = (df[y_col] >= start) & (df[y_col] <= end)
+        subset = df[mask].copy() # copy to avoid slice warnings
         
-        # Create Label with Total Count
-        label = f"Impulse {start}-{end} (N={len(subset)})"
+        # Create Label with Total Count and % of Total Data
+        subset_n = len(subset)
+        subset_pct_of_total = (subset_n / total_n * 100) if total_n > 0 else 0
+        
+        # Format requested: Impulse 0.5% (N=225 | 15% of total)
+        unit = "%" if "Percent" in y_col or "%" in y_col else " pts"
+        label = f"{y_col} {start}-{end}{unit} (N={subset_n} | {subset_pct_of_total:.1f}% of total)"
         y_labels.append(label)
         
         if subset.empty:
-            # Empty row of zeros
             matrix_counts.append([0] * len(x_labels))
             matrix_pcts.append([0] * len(x_labels))
             matrix_atrs.append([0] * len(x_labels))
+            matrix_total_pcts.append([0] * len(x_labels))
         else:
-            # Bin the Reversal %
-            # cut returns a Series of Intervals
-            counts_series = pd.cut(subset['Reversal%'], bins=bins, include_lowest=True, right=False).value_counts().sort_index()
+            # Bin the Reversal % (including overflow)
+            subset['Bin'] = pd.cut(subset['Reversal%'], bins=bins, include_lowest=True, right=False)
+            counts_series = subset['Bin'].value_counts().sort_index()
             
-            # Reindex to ensure all bins are present
-            counts_series = counts_series.reindex(pd.cut(pd.Series([0]), bins=bins, right=False).values.categories).fillna(0)
+            # Ensure all bins are present even if empty
+            counts_series = counts_series.reindex(subset['Bin'].cat.categories).fillna(0)
             
-            # Raw Counts
-            row_counts = counts_series.tolist()
+            row_counts = counts_series.astype(int).tolist()
             matrix_counts.append(row_counts)
             
-            # Probabilities (Percentage of this row's total)
-            row_total = sum(row_counts)
-            if row_total > 0:
-                row_pcts = [(c / row_total) * 100.0 for c in row_counts]
-            else:
-                row_pcts = [0.0] * len(row_counts)
-                
-            matrix_pcts.append(row_pcts)
+            # Use subset_n for perfect row-wise percentages
+            matrix_pcts.append([(c / subset_n) * 100.0 if subset_n > 0 else 0.0 for c in row_counts])
 
-            # --- ATR Calculation Logic ---
-            # We need to bin the 'subset' again to get the ATRs for each specific bin
-            # pd.cut returns the bin label. We group by that.
-            subset['Bin'] = pd.cut(subset['Reversal%'], bins=bins, include_lowest=True, right=False)
-            
-            # Group by Bin and calculate Mean BaseATR (Volatility when move started)
-            # You can change 'BaseATR_Live' to 'PeakATR_Live' if preferred. Base is usually cleaner.
-            atr_series = subset.groupby('Bin')['BaseATR_Live'].mean()
-            
-            # Reindex to match the bins structure
-            # Categories must match EXACTLY what pd.cut produced above
-            atr_series = atr_series.reindex(counts_series.index).fillna(0)
-            
+            # Total Density % (Cell Count / Total dataframe count)
+            matrix_total_pcts.append([(c / total_n) * 100.0 if total_n > 0 else 0.0 for c in row_counts])
+
+            # ATR Calculation Logic
+            atr_series = subset.groupby('Bin', observed=False)['BaseATR_Live'].mean()
+            atr_series = atr_series.reindex(subset['Bin'].cat.categories).fillna(0)
             matrix_atrs.append(atr_series.tolist())
 
-    return matrix_pcts, matrix_counts, matrix_atrs, y_labels, x_labels
+    return matrix_pcts, matrix_counts, matrix_atrs, matrix_total_pcts, y_labels, x_labels
 
 def calculate_session_comparison_matrix(df):
     """
     Calculates a frequency matrix comparing Reversal % distributions across Sessions.
     """
     if df.empty:
-        return [], [], [], [], []
+        return [], [], [], [], [], []
 
     sessions = ["SYDNEY", "TOKYO", "LONDON", "NEW YORK"]
-    bins = np.arange(0, 105, 5) 
-    x_labels = [f"{int(bins[i])}-{int(bins[i+1])}%" for i in range(len(bins)-1)]
+    # Bins including overflow
+    bins = list(range(0, 105, 5)) + [9999]
+    x_labels = [f"{bins[i]}-{bins[i+1]}%" if bins[i+1] <= 100 else ">100%" for i in range(len(bins)-1)]
     
     matrix_counts = []
     matrix_pcts = []
     matrix_atrs = []
+    matrix_total_pcts = []
     y_labels = []
+
+    total_n = len(df)
 
     for sess in sessions:
         mask = (df['Session_Peak'] == sess)
-        subset = df[mask]
+        subset = df[mask].copy()
         
-        y_labels.append(f"{sess} (N={len(subset)})")
+        subset_n = len(subset)
+        subset_pct = (subset_n / total_n * 100) if total_n > 0 else 0
+        y_labels.append(f"{sess} (N={subset_n} | {subset_pct:.1f}% of total)")
         
         if subset.empty:
             matrix_counts.append([0] * len(x_labels))
             matrix_pcts.append([0] * len(x_labels))
             matrix_atrs.append([0] * len(x_labels))
+            matrix_total_pcts.append([0] * len(x_labels))
         else:
-            # Counts
-            counts_series = pd.cut(subset['Reversal%'], bins=bins, include_lowest=True, right=False).value_counts().sort_index()
-            counts_series = counts_series.reindex(pd.cut(pd.Series([0]), bins=bins, right=False).values.categories).fillna(0)
+            # Binning with overflow
+            subset['Bin'] = pd.cut(subset['Reversal%'], bins=bins, include_lowest=True, right=False)
+            counts_series = subset['Bin'].value_counts().sort_index()
+            counts_series = counts_series.reindex(subset['Bin'].cat.categories).fillna(0)
             
-            row_counts = counts_series.tolist()
+            row_counts = counts_series.astype(int).tolist()
             matrix_counts.append(row_counts)
             
-            # Pcts
-            row_total = sum(row_counts)
-            matrix_pcts.append([(c / row_total) * 100.0 for c in row_counts])
+            # Pcts (Row-wise) using subset_n for perfect math
+            matrix_pcts.append([(c / subset_n) * 100.0 if subset_n > 0 else 0.0 for c in row_counts])
             
+            # Total Density %
+            matrix_total_pcts.append([(c / total_n) * 100.0 if total_n > 0 else 0.0 for c in row_counts])
+
             # ATRs
-            subset['Bin'] = pd.cut(subset['Reversal%'], bins=bins, include_lowest=True, right=False)
             atr_series = subset.groupby('Bin', observed=False)['BaseATR_Live'].mean()
-            atr_series = atr_series.reindex(counts_series.index).fillna(0)
+            atr_series = atr_series.reindex(subset['Bin'].cat.categories).fillna(0)
             matrix_atrs.append(atr_series.tolist())
 
-    return matrix_pcts, matrix_counts, matrix_atrs, y_labels, x_labels
+    return matrix_pcts, matrix_counts, matrix_atrs, matrix_total_pcts, y_labels, x_labels
