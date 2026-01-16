@@ -1,0 +1,579 @@
+//+------------------------------------------------------------------+
+//|                                     MA_Crossover_Analysis.mq5     |
+//|                                  Copyright 2024, Trading AI       |
+//|                                             https://www.mql5.com |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2024, Trading AI"
+#property link      "https://www.mql5.com"
+#property version   "1.00"
+#property strict
+
+//--- Input Parameters
+input group "Moving Average Settings"
+input int              InpMAPeriod       = 20;          // MA Period
+input ENUM_MA_METHOD   InpMAMethod       = MODE_EMA;    // MA Method
+input ENUM_APPLIED_PRICE InpMAAppliedPrice = PRICE_CLOSE; // Applied Price
+
+input group "CSV Logging Settings"
+input string           InpStatsFilename  = "Crossover_Stats.csv";   // CSV-1: Stats Filename
+input string           InpImpulseFilename = "Impulse_Reversal.csv"; // CSV-2: Impulse Filename
+
+input group "Analysis Settings"
+input int              InpHistoryBars     = 500;         // Bars to scan on start
+input double           InpRevThresholdPct = 30.0;        // Reversal Threshold %
+input int              InpMinPeakDist     = 10.0;        // Min Price Units to update peak
+input int              InpATRPeriod       = 14;          // ATR Period
+input ENUM_TIMEFRAMES  InpATRTimeframe    = PERIOD_CURRENT; // ATR Timeframe
+
+//--- Global Variables
+int      handleMA;
+int      handleATR;
+datetime lastBarTime;
+double   basePrice = 0; 
+double   crossoverStartMA = 0;
+double   currentPeak = 0; // Local peak (resets after reversal)
+double   globalTrendExtremum = 0; // Absolute peak for the entire trend (never resets)
+double   globalTrendStartPrice = 0; // Absolute start price of the trend (never resets)
+double   globalTrendPeakMA = 0;   // MA Value at the moment the peak was established
+bool     isTrendActive = false;
+string   trendDir = ""; 
+int      barsInTrend = 0; // Tracks bars since crossover or reset
+
+// Added Metadata Tracking
+datetime globalScanStart;
+datetime globalScanEnd;
+
+// --- SESSION TIME & TIMEZONE VARIABLES ---
+long     brokerOffsetSecs = 0; // Offset: BrokerTime - GMT
+datetime basePriceTime;        // Time when Base Price was set
+datetime currentPeakTime;      // Time when current Local Peak was set
+datetime globalTrendPeakTime;  // Time when Global Peak was set
+
+// --- ATR CACHE VARIABLES ---
+// For CSV-1 (Crossover Stats)
+double startATR_Closed, startATR_Live;
+double trendPeakATR_Closed, trendPeakATR_Live;
+
+// For CSV-2 (Impulse Analysis)
+double baseATR_Closed, baseATR_Live;
+double impulsePeakATR_Closed, impulsePeakATR_Live;
+
+
+// Internal counters for debugging
+int      statsCount = 0;
+int      impulseCount = 0;
+
+//--- Stats for CSV-1
+datetime crossoverStartTime;
+// Removed duplicate crossoverStartMA
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   globalScanStart = TimeCurrent();
+   globalScanEnd   = TimeCurrent();
+   
+   // CALCULATE BROKER OFFSET (Broker Time - GMT)
+   // We use TimeCurrent() (Broker) and TimeGMT()
+   brokerOffsetSecs = (long)TimeCurrent() - (long)TimeGMT();
+   Print(">>> TIMEZONE DEBUG: Broker Time: ", TimeCurrent(), " | GMT: ", TimeGMT(), " | Offset: ", brokerOffsetSecs);
+   
+   handleMA = iMA(_Symbol, _Period, InpMAPeriod, 0, InpMAMethod, InpMAAppliedPrice);
+   handleATR = iATR(_Symbol, InpATRTimeframe, InpATRPeriod);
+   
+   if(handleMA == INVALID_HANDLE || handleATR == INVALID_HANDLE)
+   {
+      Print("!!! CRITICAL ERROR: Failed to create indicator handles.");
+      return(INIT_FAILED);
+   }
+
+   // --- DIAGNOSTIC WRITE TEST ---
+   // We use FILE_COMMON to make files easy to find and persistent across Strategy Tester runs.
+   string testFilename = "EA_Write_Test.txt";
+   int testFile = FileOpen(testFilename, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(testFile != INVALID_HANDLE)
+   {
+      FileWrite(testFile, "Write test successful at " + TimeToString(TimeCurrent()));
+      FileClose(testFile);
+      Print(">>> DIAGNOSTIC: Write permission confirmed in FILE_COMMON folder.");
+      FileDelete(testFilename, FILE_COMMON);
+   }
+   else
+   {
+      Print("!!! DIAGNOSTIC ERROR: Cannot write to folder. Error code: ", _LastError);
+   }
+
+   // Initialize CSV-1 Headers locally
+   if(!FileIsExist(InpStatsFilename, 0))
+   {
+      int file = FileOpen(InpStatsFilename, FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ, ',');
+      if(file != INVALID_HANDLE)
+      {
+         FileWrite(file, "StartTime", "EndTime", "Direction", "StartPrice", "EndPrice", "MaxMinPrice", "Distance", "MAValue", 
+                         "StartATR_Closed", "StartATR_Live", 
+                         "PeakATR_Closed", "PeakATR_Live",
+                         "EndATR_Closed", "EndATR_Live",
+                         "Session_Start", "Session_Peak", "Session_End", // [NEW] Session Columns
+                         "Symbol", "TF", "MAPeriod", "MAType", "ScanStart", "ScanEnd");
+         FileClose(file);
+         Print(">>> CSV-1 Created Success: ", InpStatsFilename);
+      }
+      else Print("!!! CSV-1 ERROR: Could not create file: ", _LastError);
+   }
+
+   // Initialize CSV-2 Headers locally
+   if(!FileIsExist(InpImpulseFilename, 0))
+   {
+      int file = FileOpen(InpImpulseFilename, FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ, ',');
+      if(file != INVALID_HANDLE)
+      {
+         FileWrite(file, "Time", "Direction", "BasePrice", "Peak", "TriggerPrice", "Impulse", "Pullback", "Reversal%",
+                         "BaseATR_Closed", "BaseATR_Live",
+                         "PeakATR_Closed", "PeakATR_Live",
+                         "RevATR_Closed", "RevATR_Live",
+                         "Session_Base", "Session_Peak", "Session_Trigger", // [NEW] Session Columns
+                         "Symbol", "TF", "MAPeriod", "MAType", "ScanStart", "ScanEnd");
+         FileClose(file);
+         Print(">>> CSV-2 Created Success: ", InpImpulseFilename);
+      }
+      else Print("!!! CSV-2 ERROR: Could not create file: ", _LastError);
+   }
+
+   // --- INDICATOR READINESS CHECK ---
+   Print(">>> Waiting for Indicators to calculate buffers...");
+   int timeout = 0;
+   while(BarsCalculated(handleMA) < InpHistoryBars + 5 && timeout < 100)
+   {
+      Sleep(50);
+      timeout++;
+   }
+   
+   if(BarsCalculated(handleMA) < InpHistoryBars)
+      Print("!!! WARNING: MA buffer not fully loaded. Only ", BarsCalculated(handleMA), " bars ready.");
+   else
+      Print(">>> MA Ready: ", BarsCalculated(handleMA), " bars calculated.");
+
+   // --- HISTORY SCAN ---
+   statsCount = 0;
+   impulseCount = 0;
+   Print(">>> STARTING HISTORY SCAN (", InpHistoryBars, " bars)...");
+   RunHistoryScan();
+   
+   Print("==================================================================");
+   Print("SCANNED: ", InpHistoryBars, " bars.");
+   Print("LOGGED: ", statsCount, " Crossovers and ", impulseCount, " Impulse rows.");
+   Print("FILE LOCATION: File -> Open Data Folder -> MQL5 -> Files");
+   Print("==================================================================");
+
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Scan past bars to populate CSV immediately                       |
+//+------------------------------------------------------------------+
+void RunHistoryScan()
+{
+   // We scan from oldest to newest
+   for(int i = InpHistoryBars; i >= 1; i--)
+   {
+      AnalyzeCrossover(i);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   IndicatorRelease(handleMA);
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // Only process on new bar closure
+   datetime currentTime = iTime(_Symbol, _Period, 0);
+   if(currentTime == lastBarTime) return;
+   
+   // A new bar has opened.
+   if(lastBarTime != 0)
+   {
+      // Analyze the bar that JUST closed (index 1)
+      AnalyzeCrossover(1);
+   }
+   
+   lastBarTime = currentTime;
+}
+
+//+------------------------------------------------------------------+
+//| Core Analysis Logic (Index 1 for live, i for history)            |
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Core Analysis Logic (Cyclical Pivot Mode)                       |
+//+------------------------------------------------------------------+
+void AnalyzeCrossover(int idx)
+{
+   double maVal1 = GetMAValue(idx);     
+   double maVal2 = GetMAValue(idx + 1); 
+   double close1 = iClose(_Symbol, _Period, idx);
+   double close2 = iClose(_Symbol, _Period, idx + 1);
+   double high1  = iHigh(_Symbol, _Period, idx);
+   double low1   = iLow(_Symbol, _Period, idx);
+   
+   if(maVal1 == 0 || maVal2 == 0) return;
+
+   // 1. Detect Standard Crossover Completion (Trend Termination)
+   if(isTrendActive)
+   {
+      bool crossoverEnded = false;
+      if(trendDir == "BULLISH" && close1 < maVal1) crossoverEnded = true;
+      if(trendDir == "BEARISH" && close1 > maVal1) crossoverEnded = true;
+      
+      if(crossoverEnded)
+      {
+         // Capture ATRs at End of Trend
+         double endATR_Closed = GetATRValue(idx);
+         double endATR_Live   = GetATRValue(idx - 1);
+         
+         LogCSV1(close1, iTime(_Symbol, _Period, idx), endATR_Closed, endATR_Live);
+         isTrendActive = false;
+         trendDir = "";
+         barsInTrend = 0;
+         // Removed 'return' to allow checking for new trend immediately (Stop & Reverse)
+      }
+   }
+
+   // 2. Detect New Crossover Start
+   bool newBullish = (close2 <= maVal2 && close1 > maVal1);
+   bool newBearish = (close2 >= maVal2 && close1 < maVal1);
+
+   if(newBullish || newBearish)
+   {
+      isTrendActive = true;
+      basePrice = maVal1; // Center point is MA Value
+      basePriceTime = iTime(_Symbol, _Period, idx); // [NEW] Track Time      
+      globalTrendStartPrice = close1; // Update: StartPrice = Candle Close (Entry Price)
+      barsInTrend = 0;
+      crossoverStartTime = iTime(_Symbol, _Period, idx);
+      crossoverStartMA = maVal1;
+      trendDir = newBullish ? "BULLISH" : "BEARISH";
+      
+      // Capture ATRs at Start of Trend (also Base for Impulse)
+      startATR_Closed = GetATRValue(idx);
+      startATR_Live   = GetATRValue(idx - 1);
+      
+      baseATR_Closed = startATR_Closed;
+      baseATR_Live   = startATR_Live;
+      
+      if(newBullish) 
+      {
+          currentPeak = high1;
+          currentPeakTime = iTime(_Symbol, _Period, idx); // [NEW]
+          globalTrendExtremum = high1; // Init Global Peak
+          globalTrendPeakTime = iTime(_Symbol, _Period, idx); // [NEW]
+          globalTrendPeakMA = maVal1;  // Init Global Peak MA
+          
+          trendPeakATR_Closed = startATR_Closed; trendPeakATR_Live = startATR_Live;
+          impulsePeakATR_Closed = startATR_Closed; impulsePeakATR_Live = startATR_Live;
+      }
+      else
+      {
+          currentPeak = low1;
+          currentPeakTime = iTime(_Symbol, _Period, idx); // [NEW]
+          globalTrendExtremum = low1; // Init Global Peak
+          globalTrendPeakTime = iTime(_Symbol, _Period, idx); // [NEW]
+          globalTrendPeakMA = maVal1;  // Init Global Peak MA
+          
+          trendPeakATR_Closed = startATR_Closed; trendPeakATR_Live = startATR_Live;
+          impulsePeakATR_Closed = startATR_Closed; impulsePeakATR_Live = startATR_Live;
+      }
+      
+      return; 
+   }
+
+   // 3. Ongoing Wave Analysis (Multi-Pivot Reset Logic)
+   if(isTrendActive)
+   {
+      barsInTrend++;
+      
+       if(trendDir == "BULLISH")
+       {
+          // Update Global Max (Never Resets) and its MA
+          if(high1 > globalTrendExtremum)
+          {
+             globalTrendExtremum = high1;
+             globalTrendPeakTime = iTime(_Symbol, _Period, idx); // [NEW]
+             globalTrendPeakMA = maVal1; // Capture MA at the new Peak
+             trendPeakATR_Closed = GetATRValue(idx); 
+             trendPeakATR_Live = GetATRValue(idx - 1); 
+          }
+
+          // Update Peak if it moves higher by at least Min Distance
+          if(high1 > currentPeak + InpMinPeakDist)
+          {
+             currentPeak = high1;
+             currentPeakTime = iTime(_Symbol, _Period, idx); // [NEW]
+             impulsePeakATR_Closed = GetATRValue(idx);
+             impulsePeakATR_Live = GetATRValue(idx - 1);
+          }
+         else
+         {
+            // Check for Reversal from Peak towards BasePrice (MA)
+            double impulse = currentPeak - basePrice;
+            double pullback = currentPeak - low1;
+            double revPct = (impulse > 0) ? (pullback / impulse) * 100.0 : 0;
+            
+            if(impulse >= InpMinPeakDist && revPct > InpRevThresholdPct)
+            {
+               // Capture Reversal ATR
+               double revATR_Closed = GetATRValue(idx);
+               double revATR_Live   = GetATRValue(idx - 1);
+
+               LogCSV2(currentPeak, low1, impulse, pullback, revPct, idx, revATR_Closed, revATR_Live);
+               // RESET PIVOT: Center point resets to current MA
+               basePrice = maVal1;
+               basePriceTime = iTime(_Symbol, _Period, idx); // [NEW]
+               
+               // Reset Base ATRs
+               baseATR_Closed = GetATRValue(idx); baseATR_Live = GetATRValue(idx-1);
+               
+               currentPeak = high1; // Reset peak to current candle
+               currentPeakTime = iTime(_Symbol, _Period, idx); // [NEW]
+               // Reset Impulse Peak ATRs
+               impulsePeakATR_Closed = baseATR_Closed; impulsePeakATR_Live = baseATR_Live;
+               
+               barsInTrend = 0;
+            }
+         }
+      }
+       else if(trendDir == "BEARISH")
+       {
+          // Update Global Min (Never Resets) and its MA
+          if(low1 < globalTrendExtremum)
+          {
+              globalTrendExtremum = low1;
+              globalTrendPeakTime = iTime(_Symbol, _Period, idx); // [NEW]
+              globalTrendPeakMA = maVal1; // Capture MA at the new Peak
+              trendPeakATR_Closed = GetATRValue(idx); 
+              trendPeakATR_Live = GetATRValue(idx - 1); 
+          }
+
+          // Update Peak if it moves lower by at least Min Distance
+          if(low1 < currentPeak - InpMinPeakDist)
+          {
+             currentPeak = low1;
+             currentPeakTime = iTime(_Symbol, _Period, idx); // [NEW]
+             impulsePeakATR_Closed = GetATRValue(idx);
+             impulsePeakATR_Live = GetATRValue(idx - 1);
+          }
+         else
+         {
+            double impulse = basePrice - currentPeak;
+            double pullback = high1 - currentPeak;
+            double revPct = (impulse > 0) ? (pullback / impulse) * 100.0 : 0;
+            
+            if(impulse >= InpMinPeakDist && revPct > InpRevThresholdPct)
+            {
+               // Capture Reversal ATR
+               double revATR_Closed = GetATRValue(idx);
+               double revATR_Live   = GetATRValue(idx - 1);
+
+               LogCSV2(currentPeak, high1, impulse, pullback, revPct, idx, revATR_Closed, revATR_Live);
+               // RESET PIVOT
+               basePrice = maVal1;
+               basePriceTime = iTime(_Symbol, _Period, idx); // [NEW]
+               
+               // Reset Base ATRs
+               baseATR_Closed = GetATRValue(idx); baseATR_Live = GetATRValue(idx-1);
+               
+               currentPeak = low1;
+               currentPeakTime = iTime(_Symbol, _Period, idx); // [NEW]
+               // Reset Impulse Peak ATRs
+               impulsePeakATR_Closed = baseATR_Closed; impulsePeakATR_Live = baseATR_Live;
+               
+               barsInTrend = 0;
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Logging Functions                                                |
+//+------------------------------------------------------------------+
+void LogCSV1(double endPrice, datetime endTime, double endATR_Closed, double endATR_Live)
+{
+   double distance = 0;
+   // Use GLOBAL Extremum and START MA/Price for correct full-trend distance
+   if(trendDir == "BULLISH") distance = globalTrendExtremum - crossoverStartMA;
+   else                      distance = crossoverStartMA - globalTrendExtremum;
+
+   ResetLastError();
+   int file = FileOpen(InpStatsFilename, FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ, ',');
+   if(file == INVALID_HANDLE)
+   {
+      file = FileOpen(InpStatsFilename, FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ, ',');
+      if(file != INVALID_HANDLE) 
+         FileWrite(file, "StartTime", "EndTime", "Direction", "StartPrice", "EndPrice", "MaxMinPrice", "Distance", "MAValue", "StartATR_Closed", "StartATR_Live", "PeakATR_Closed", "PeakATR_Live", "EndATR_Closed", "EndATR_Live", "Session_Start", "Session_Peak", "Session_End", "Symbol", "TF", "MAPeriod", "MAType", "ScanStart", "ScanEnd");
+   }
+
+   if(file != INVALID_HANDLE)
+   {
+      // Calculate Sessions
+      string sessStart = GetSessionName(crossoverStartTime);
+      string sessPeak  = GetSessionName(globalTrendPeakTime);
+      string sessEnd   = GetSessionName(endTime);
+
+      FileSeek(file, 0, SEEK_END);
+      FileWrite(file, 
+                TimeToString(crossoverStartTime), 
+                TimeToString(endTime),
+                trendDir, 
+                DoubleToString(globalTrendStartPrice, _Digits), 
+                DoubleToString(endPrice, _Digits), 
+                DoubleToString(globalTrendExtremum, _Digits), 
+                DoubleToString(distance, _Digits), 
+                DoubleToString(globalTrendPeakMA, _Digits),
+                DoubleToString(startATR_Closed, _Digits), DoubleToString(startATR_Live, _Digits), 
+                DoubleToString(trendPeakATR_Closed, _Digits), DoubleToString(trendPeakATR_Live, _Digits), 
+                DoubleToString(endATR_Closed, _Digits), DoubleToString(endATR_Live, _Digits), 
+                sessStart, sessPeak, sessEnd,
+                _Symbol,
+                EnumToString(_Period),
+                IntegerToString(InpMAPeriod),
+                EnumToString(InpMAMethod),
+                TimeToString(globalScanStart),
+                TimeToString(TimeCurrent()));
+      FileClose(file);
+      statsCount++;
+      Print(">>> SAVED CROSSOVER: ", trendDir);
+   }
+   else Print("!!! CSV-1 ERROR: Failed to open. Error: ", _LastError);
+}
+
+void LogCSV2(double peak, double trigPrice, double impulse, double pullback, double revPct, int idx, double revATR_Closed, double revATR_Live)
+{
+   ResetLastError();
+   int file = FileOpen(InpImpulseFilename, FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ, ',');
+   if(file == INVALID_HANDLE)
+   {
+      file = FileOpen(InpImpulseFilename, FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ, ',');
+      if(file != INVALID_HANDLE)
+         FileWrite(file, "Time", "Direction", "BasePrice", "Peak", "TriggerPrice", "Impulse", "Pullback", "Reversal%", "BaseATR_Closed", "BaseATR_Live", "PeakATR_Closed", "PeakATR_Live", "RevATR_Closed", "RevATR_Live", "Session_Base", "Session_Peak", "Session_Trigger", "Symbol", "TF", "MAPeriod", "MAType", "ScanStart", "ScanEnd");
+   }
+
+   if(file != INVALID_HANDLE)
+   {
+      // Calculate Sessions
+      string sessBase = GetSessionName(basePriceTime);
+      string sessPeak = GetSessionName(currentPeakTime);
+      string sessTrig = GetSessionName(iTime(_Symbol, _Period, idx));
+
+      FileSeek(file, 0, SEEK_END);
+      FileWrite(file, 
+                TimeToString(iTime(_Symbol, _Period, idx)), 
+                trendDir, 
+                DoubleToString(basePrice, _Digits), 
+                DoubleToString(peak, _Digits), 
+                DoubleToString(trigPrice, _Digits), 
+                DoubleToString(impulse, _Digits), 
+                DoubleToString(pullback, _Digits), 
+                DoubleToString(revPct, 2),
+                DoubleToString(baseATR_Closed, _Digits), DoubleToString(baseATR_Live, _Digits), 
+                DoubleToString(impulsePeakATR_Closed, _Digits), DoubleToString(impulsePeakATR_Live, _Digits), 
+                DoubleToString(revATR_Closed, _Digits), DoubleToString(revATR_Live, _Digits), 
+                sessBase, sessPeak, sessTrig,
+                _Symbol,
+                EnumToString(_Period),
+                IntegerToString(InpMAPeriod),
+                EnumToString(InpMAMethod),
+                TimeToString(globalScanStart),
+                TimeToString(TimeCurrent()));
+      FileClose(file);
+      impulseCount++;
+   }
+   else Print("!!! CSV-2 ERROR: Failed to open. Error: ", _LastError);
+}
+
+//+------------------------------------------------------------------+
+//| Helpers: Get Indicator Values                                    |
+//+------------------------------------------------------------------+
+double GetMAValue(int index)
+{
+   double buffer[1];
+   if(CopyBuffer(handleMA, 0, index, 1, buffer) > 0)
+      return buffer[0];
+   return 0;
+}
+
+double GetATRValue(int index)
+{
+   double buffer[1];
+   datetime time = iTime(_Symbol, _Period, index);
+   
+   if(CopyBuffer(handleATR, 0, time, 1, buffer) > 0)
+      return buffer[0];
+   return 0;
+}
+
+
+
+//+------------------------------------------------------------------+
+//| SESSION LOGIC (IST)                                              |
+//+------------------------------------------------------------------+
+bool IsSessionActive(int curMin, int startMin, int endMin)
+{
+   if(startMin < endMin)
+      return (curMin >= startMin && curMin < endMin);
+   else
+      return (curMin >= startMin || curMin < endMin);
+}
+
+string GetSessionName(datetime time)
+{
+   // Convert Broker History Time -> GMT -> IST
+   // brokerOffsetSecs = Broker - GMT
+   // GMT = Broker - offset
+   // IST = GMT + 5.5hr (19800s)
+   
+   datetime istTime = (datetime)(time - brokerOffsetSecs + 19800);
+   
+   MqlDateTime ist;
+   TimeToStruct(istTime, ist);
+   int istMinutes = ist.hour * 60 + ist.min;
+
+   // IST session times
+   int sydneyStart =  2 * 60 + 30, sydneyEnd = 11 * 60 + 30;
+   int tokyoStart  =  5 * 60 + 30, tokyoEnd  = 14 * 60 + 30;
+   int londonStart = 12 * 60 + 30, londonEnd = 21 * 60 + 30;
+   int nyStart     = 17 * 60 + 30, nyEnd     =  2 * 60 + 30;
+
+   // Check Priority: Sydney -> Tokyo -> London -> NY (Sequential logic from user)
+   // Better: Check all and append? Or single winner?
+   // User original logic:
+   /*
+      string current = "NONE";
+      if(sydney) current = "SYDNEY";
+      if(tokyo)  current = "TOKYO";
+      if(london) current = "LONDON";
+      if(ny)     current = "NEW YORK";
+   */
+   // This means NY overrides all if active. London overrides Tokyo.
+   
+   bool sydney = IsSessionActive(istMinutes, sydneyStart, sydneyEnd);
+   bool tokyo  = IsSessionActive(istMinutes, tokyoStart, tokyoEnd);
+   bool london = IsSessionActive(istMinutes, londonStart, londonEnd);
+   bool ny     = IsSessionActive(istMinutes, nyStart, nyEnd);
+
+   string current = "NONE";
+   if(sydney) current = "SYDNEY";
+   if(tokyo)  current = "TOKYO";
+   if(london) current = "LONDON";
+   if(ny)     current = "NEW YORK";
+
+   return current;
+}
